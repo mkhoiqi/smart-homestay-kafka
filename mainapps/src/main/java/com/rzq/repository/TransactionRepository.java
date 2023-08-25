@@ -17,6 +17,7 @@ import java.util.Optional;
 public interface TransactionRepository extends JpaRepository<Transaction, String>, JpaSpecificationExecutor<Transaction> {
     public Optional<Transaction> findByIdAndStatusNotIn(String id, List<String> excludedStatuses);
     public Optional<Transaction> findByIdAndCreatedBy(String id, User createdBy);
+    public Optional<Transaction> findByVirtualAccount(String virtualAccount);
 
     @Query("SELECT " +
             "CASE " +

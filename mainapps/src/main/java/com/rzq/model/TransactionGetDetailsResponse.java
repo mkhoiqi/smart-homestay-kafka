@@ -43,10 +43,10 @@ public class TransactionGetDetailsResponse {
     private Integer numberOfRooms;
     private String status;
 
-    @Column(name = "virtual_account")
+    @JsonProperty("virtual_account")
     private String virtualAccount;
 
-    @Column(name = "virtual_account_expired_at")
+    @JsonProperty("virtual_account_expired_at")
     private LocalDateTime virtualAccountExpiredAt;
 
     @JsonProperty("created_by")

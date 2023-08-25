@@ -3,10 +3,14 @@ package com.rzq.service.impl;
 import com.rzq.entity.*;
 import com.rzq.exception.CustomException;
 import com.rzq.model.*;
+import com.rzq.model.kafka.messages.CreateVirtualAccountRequestMessage;
+import com.rzq.model.kafka.messages.CreateVirtualAccountResponseMessage;
+import com.rzq.model.kafka.messages.PayVirtualAccountResponseMessage;
 import com.rzq.repository.*;
 import com.rzq.service.TransactionService;
 import com.rzq.service.ValidationService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -22,8 +26,10 @@ import java.util.stream.Collectors;
 
 @Service
 public class TransactionServiceImpl implements TransactionService {
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
     @Autowired
-    KafkaTemplate kafkaTemplate;
+    KafkaTemplate<String, Object> kafkaTemplate;
     @Autowired
     TransactionRepository transactionRepository;
 
@@ -207,7 +213,6 @@ public class TransactionServiceImpl implements TransactionService {
         audit.setCreatedAt(now);
 
         auditRepository.save(audit);
-        kafkaTemplate.send("smarthomestay", toTransactionOrderResponse(transaction).toString());
         return toTransactionOrderResponse(transaction);
     }
 
@@ -367,6 +372,164 @@ public class TransactionServiceImpl implements TransactionService {
 
         auditRepository.save(audit);
         return toTransactionOrderResponse(transaction);
+    }
+
+    @Override
+    public TransactionOrderResponse orderV2(String token, TransactionOrderRequest request) {
+
+        User user = validationService.validateToken(token);
+
+        if(user.getIsEmployees()){
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Unauthorized");
+        }
+
+        validationService.validate(request);
+
+        Room room = roomRepository.findByIdAndDeletedAtIsNull(request.getRoomId()).orElseThrow(
+                () -> new CustomException(HttpStatus.NOT_FOUND, "room_id", "Not Found")
+        );
+
+        Set<AdditionalFacility> additionalFacilities = new HashSet<>();
+        for(String additionalFacilityId : request.getAdditionalFacilities()){
+            AdditionalFacility additionalFacility = additionalFacilityRepository.findByIdAndDeletedAtIsNull(additionalFacilityId).orElseThrow(
+                    () -> new CustomException(HttpStatus.NOT_FOUND, "additional_facilities", "not found")
+            );
+            additionalFacilities.add(additionalFacility);
+        }
+
+        if(request.getCheckinDate().isBefore(LocalDate.now())){
+            throw new CustomException(HttpStatus.BAD_REQUEST, "checkin_date", "checkin date can't occur before today");
+        }
+
+        if(request.getCheckoutDate().isBefore(LocalDate.now())){
+            throw new CustomException(HttpStatus.BAD_REQUEST, "checkout_date", "checkout date can't occur before today");
+        }
+
+        if(!request.getCheckoutDate().isAfter(request.getCheckinDate())){
+            throw new CustomException(HttpStatus.BAD_REQUEST, "checkout_date", "checkout date must occur after checkin date");
+        }
+
+        if(!availabilityCheck(room, request)){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "The room is not available for the given date range");
+        }
+
+
+        Long dateRange = ChronoUnit.DAYS.between(request.getCheckinDate(), request.getCheckoutDate());
+        String status = "Waiting Approval";
+        String lastAction = "Submitted";
+        String lastActivity = "Submit Order";
+        Long sumPriceAdditionalFacilities = sumAdditionalFacilitiesPrice(additionalFacilities);
+        Long amount = (request.getNumberOfRooms()*room.getPrice()*dateRange)+sumPriceAdditionalFacilities;
+        LocalDateTime now = LocalDateTime.now();
+
+        Transaction transaction = new Transaction();
+        transaction.setId(UUID.randomUUID().toString());
+        transaction.setCreatedBy(user);
+        transaction.setCreatedAt(now);
+        transaction.setUpdatedAt(now);
+        transaction.setStatus(status);
+        transaction.setLastAction(lastAction);
+        transaction.setLastActivity(lastActivity);
+        transaction.setRoom(room);
+        transaction.setNumberOfRooms(request.getNumberOfRooms());
+        transaction.setCheckinDate(request.getCheckinDate());
+        transaction.setCheckoutDate(request.getCheckoutDate());
+        transaction.setAmount(amount);
+        transaction.setAdditionalFacilities(additionalFacilities);
+
+        transactionRepository.save(transaction);
+
+        Audit audit = new Audit();
+        audit.setId(UUID.randomUUID().toString());
+        audit.setTransaction(transaction);
+        audit.setActivity(lastActivity);
+        audit.setAction(lastAction);
+        audit.setCreatedBy(user);
+        audit.setCreatedAt(now);
+        kafkaTemplate.send("virtual-account", new CreateVirtualAccountRequestMessage(transaction.getAmount(), transaction.getId()));
+
+        auditRepository.save(audit);
+        return toTransactionOrderResponse(transaction);
+    }
+
+    @Override
+    public TransactionOrderResponse approvalV1(String token, String id, String action) {
+        return null;
+    }
+
+    @Override
+    public String updateVirtualAccount(CreateVirtualAccountResponseMessage responseMessage) {
+
+        List<String> excludedStatus = new ArrayList<>();
+        excludedStatus.add("Rejected");
+        excludedStatus.add("Cancelled");
+        excludedStatus.add("Checked Out");
+        excludedStatus.add("Expired");
+        Transaction transaction = transactionRepository.findByIdAndStatusNotIn(responseMessage.getTransactionId(), excludedStatus).orElseThrow(
+                () -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found")
+        );
+
+        String lastActivity = "Approval Employees";
+        String status = "Waiting Payment";
+        String action = "Approved";
+        LocalDateTime now = LocalDateTime.now();
+
+        transaction.setUpdatedAt(now);
+        transaction.setStatus(status);
+        transaction.setLastAction(action);
+        transaction.setLastActivity(lastActivity);
+        transaction.setVirtualAccount(responseMessage.getVirtualAccount());
+        transaction.setVirtualAccountExpiredAt(responseMessage.getVirtualAccountExpiredAt());
+        transactionRepository.save(transaction);
+
+        Audit audit = new Audit();
+        audit.setId(UUID.randomUUID().toString());
+        audit.setTransaction(transaction);
+        audit.setActivity(lastActivity);
+        audit.setAction(action);
+        audit.setCreatedBy(transaction.getCreatedBy());
+        audit.setCreatedAt(now);
+
+        auditRepository.save(audit);
+
+        return null;
+    }
+
+    @Override
+    public String updateStatusVa(PayVirtualAccountResponseMessage responseMessage) {
+        System.out.println("responseMessage.getVirtualAccount(): "+responseMessage.getVirtualAccount());
+        System.out.println("responseMessage.getVirtualAccountExpiredAt(): "+responseMessage.getVirtualAccountExpiredAt());
+        Optional<Transaction> transaction = transactionRepository.findByVirtualAccount(responseMessage.getVirtualAccount());
+        if(!transaction.isEmpty()){
+            Transaction transactionData = transaction.get();
+
+            String lastActivity = "Payment";
+            String status = "Payment Success";
+            String action = "Paid";
+            LocalDateTime now = LocalDateTime.now();
+            System.out.println("responseMessage.getStatus(): "+responseMessage.getStatus());
+            if(!responseMessage.getStatus().equalsIgnoreCase("Success")){
+                status = "Expired";
+                action = "Cancelled";
+            }
+
+            transactionData.setUpdatedAt(now);
+            transactionData.setStatus(status);
+            transactionData.setLastAction(action);
+            transactionData.setLastActivity(lastActivity);
+            transactionRepository.save(transactionData);
+
+            Audit audit = new Audit();
+            audit.setId(UUID.randomUUID().toString());
+            audit.setTransaction(transactionData);
+            audit.setActivity(lastActivity);
+            audit.setAction(action);
+            audit.setCreatedBy(transactionData.getCreatedBy());
+            audit.setCreatedAt(now);
+
+            auditRepository.save(audit);
+        }
+        return null;
     }
 
     private Long sumAdditionalFacilitiesPrice(Set<AdditionalFacility> additionalFacilities){

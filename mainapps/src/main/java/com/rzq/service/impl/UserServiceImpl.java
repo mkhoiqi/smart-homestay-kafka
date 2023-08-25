@@ -1,6 +1,7 @@
 package com.rzq.service.impl;
 
 import com.rzq.entity.User;
+import com.rzq.model.UserDetailsResponse;
 import com.rzq.model.UserLoginRequest;
 import com.rzq.model.UserRegisterRequest;
 import com.rzq.model.UserTokenResponse;
@@ -26,9 +27,6 @@ public class UserServiceImpl implements UserService {
 
     @Autowired
     UserRepository userRepository;
-
-    @Autowired
-    private KafkaTemplate<String, String> kafkaTemplate;
 
     @Override
     public void register(UserRegisterRequest request) {
@@ -60,7 +58,6 @@ public class UserServiceImpl implements UserService {
         User newUser = new User();
         newUser.setName(request.getName());
         newUser.setUsername(request.getUsername());
-        System.out.println("Set Password Nih");
         newUser.setPassword(BCrypt.hashpw(request.getPassword(), BCrypt.gensalt()));
         newUser.setIsEmployees(true);
 
@@ -82,11 +79,6 @@ public class UserServiceImpl implements UserService {
             user.setTokenExpiredAt(tokenExpiredAt);
 
             userRepository.save(user);
-
-
-            System.out.println("welcome2 "+request.getUsername()+"!");
-            kafkaTemplate.send("smarthomestay", user.toString());
-
             return UserTokenResponse.builder()
                     .token(user.getToken())
                     .tokenExpiredAt(user.getTokenExpiredAt()).build();

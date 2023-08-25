@@ -1,8 +1,8 @@
 package com.rzq.config;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
@@ -26,7 +26,12 @@ public class KafkaTopicConfig {
 
     @Bean
     public NewTopic generateVaTopic(){
-        return TopicBuilder.name("virtual-account")
+        return TopicBuilder.name("virtual-account-response")
+                .build();
+    }
+    @Bean
+    public NewTopic payVaTopic(){
+        return TopicBuilder.name("pay-virtual-account")
                 .build();
     }
 }
